@@ -1,0 +1,13 @@
+# --- Comunicação e Ambiente ---
+requests==2.31.0
+python-dotenv==1.0.0
+python-telegram-bot==20.7
+
+# --- Machine Learning e Processamento de Dados (SVM) ---
+scikit-learn==1.3.0
+joblib==1.3.1
+pandas==2.1.1
+numpy==1.26.0
+
+# --- Interface e Utilidades ---
+colorama==0.4.6

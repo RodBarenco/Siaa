@@ -1,0 +1,17 @@
+{
+  "bot_info": {
+    "name": "Cynbot",
+    "user_name": "Barenco",
+    "version": "0.0.1"
+  },
+  "memory_limits": {
+    "actual_context_chars": 500,
+    "broader_context_chars": 600,
+    "maintenance_frequency_days": 15,
+    "sql_search_limit": 3
+  },
+  "location": {
+    "latitude": "-22.9035",
+    "longitude": "-43.2096"
+  }
+}

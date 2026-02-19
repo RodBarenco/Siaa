@@ -1,0 +1,27 @@
+# --- Cynbot: Segurança e Privacidade ---
+.env
+contexts/
+*.db
+
+# --- Python: Cache e Ambiente Virtual ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+bin/
+lib/
+include/
+
+# --- IDEs e Editores ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- Sistema Operacional ---
+.DS_Store
+Thumbs.db
