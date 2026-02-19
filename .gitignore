@@ -2,6 +2,9 @@
 .env
 contexts/
 *.db
+volumes/siaa-data/contexts
+volumes/proxy-data
+volumes/vault-data
 
 # --- Python: Cache e Ambiente Virtual ---
 __pycache__/
