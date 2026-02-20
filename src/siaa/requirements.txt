@@ -1,13 +1,24 @@
+# =============================================================
+# SIAA — Dependências Python
+# Target: Oracle Cloud Free Tier ARM64 (4 OCPU / 24GB RAM)
+# =============================================================
+
 # --- Comunicação e Ambiente ---
 requests==2.31.0
 python-dotenv==1.0.0
 python-telegram-bot==20.7
 
-# --- Machine Learning e Processamento de Dados (SVM) ---
+# --- Machine Learning (SVM de intenções) ---
 scikit-learn==1.3.0
 joblib==1.3.1
 pandas==2.1.1
 numpy==1.26.0
 
-# --- Interface e Utilidades ---
+# --- Transcrição de Áudio (Whisper CPU) ---
+# Roda em CPU no ARM64 sem problema com 24GB RAM disponível
+openai-whisper==20231117
+torch==2.1.0
+torchaudio==2.1.0
+
+# --- Utilitários ---
 colorama==0.4.6

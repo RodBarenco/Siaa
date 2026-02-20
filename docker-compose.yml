@@ -1,0 +1,130 @@
+# =============================================================
+# SIAA — Docker Compose (Versão Local Corrigida)
+# =============================================================
+services:
+
+  # -----------------------------------------------------------
+  # 1. OLLAMA — LLM local
+  # -----------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    container_name: siaa-ollama
+    restart: unless-stopped
+
+    volumes:
+      - ollama-data:/root/.ollama
+
+    # Portas comentadas para evitar conflito com o Ollama do sistema (Pop!_OS)
+    # ports:
+    #   - "127.0.0.1:11434:11434"
+
+    deploy:
+      resources:
+        limits:
+          cpus: "3.0"
+          memory: 12G
+        reservations:
+          memory: 2G
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+  # -----------------------------------------------------------
+  # 2. OLLAMA-INIT — Pull automático do modelo
+  # -----------------------------------------------------------
+  ollama-init:
+    image: curlimages/curl:latest
+    container_name: siaa-ollama-init
+    depends_on:
+      - ollama
+    env_file:
+      - .env
+    entrypoint: [ "sh", "-c" ]
+    command:
+      - |
+        echo "⏳ Aguardando Ollama iniciar..."
+        sleep 10
+        echo "📦 Baixando modelo: $${OLLAMA_MODEL_CHAT:-granite3.3:2b}..."
+        curl -X POST http://ollama:11434/api/pull -d "{\"name\": \"$${OLLAMA_MODEL_CHAT:-granite3.3:2b}\"}"
+        echo "✅ Modelo pronto!"
+
+  # -----------------------------------------------------------
+  # 3. SIAA — Bot principal
+  # -----------------------------------------------------------
+  siaa:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: siaa-bot
+    restart: unless-stopped
+
+    # Dependência simplificada para evitar erro de 'unhealthy' no boot
+    depends_on:
+      - ollama
+
+    env_file:
+      - .env
+
+    environment:
+      SIAA_DATA_DIR: /siaa-data
+      OLLAMA_URL: http://ollama:11434/api/generate
+
+    volumes:
+      - siaa-data:/siaa-data
+      - siaa-model:/app/core
+
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 10G
+        reservations:
+          memory: 512M
+
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "python.*app.py"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+# =============================================================
+# VOLUMES — bind mounts para persistência de dados
+# =============================================================
+volumes:
+  siaa-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./volumes/siaa-data
+
+  siaa-model:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./volumes/siaa-model
+
+  ollama-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./volumes/ollama-data

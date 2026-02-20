@@ -1,12 +1,29 @@
-# --- Cynbot: Segurança e Privacidade ---
-.env
-contexts/
-*.db
-volumes/siaa-data/contexts
-volumes/proxy-data
-volumes/vault-data
+# =============================================================
+# Siaa — .gitignore (Segurança e Privacidade)
+# =============================================================
 
-# --- Python: Cache e Ambiente Virtual ---
+# --- Segurança e Dados Sensíveis ---
+.env
+.env.production
+*.pem
+*.key
+/volumes/vault-data/
+/volumes/proxy-data/*.db
+/volumes/siaa-data/contexts/
+/volumes/siaa-data/*.db
+/volumes/siaa-data/vault/
+/volumes/config/config.json
+volumes/ollama-data/
+volumes/siaa-data/
+volumes/proxy-data/
+volumes/vault-data/
+volumes/siaa-model/
+# --- Modelos de IA (Gerados localmente) ---
+# Ignoramos os arquivos .pkl do SVM para forçar o treino no ambiente correto
+*.pkl
+/src/siaa/core/models/
+
+# --- Python: Cache e Ambiente ---
 __pycache__/
 *.py[cod]
 *$py.class
@@ -15,16 +32,26 @@ __pycache__/
 env/
 venv/
 ENV/
-bin/
-lib/
-include/
+.venv/
+build/
+dist/
 
-# --- IDEs e Editores ---
+# --- Docker & Logs ---
+*.log
+docker-compose.override.yml
+/volumes/siaa-data/logs/
+/volumes/proxy-data/logs/
+
+# --- IDEs e Sistema ---
 .vscode/
 .idea/
 *.swp
 *.swo
-
-# --- Sistema Operacional ---
 .DS_Store
 Thumbs.db
+
+# --- Arquivos Temporários de Mídia ---
+/volumes/siaa-data/temp/
+*.wav
+*.mp3
+*.ogg
