@@ -24,7 +24,6 @@ if ! command -v docker &> /dev/null; then
     curl -fsSL https://get.docker.com | sh
     systemctl enable docker
     systemctl start docker
-    # Permite usar Docker sem sudo (requer novo login)
     usermod -aG docker ubuntu || true
     echo "✅ Docker instalado."
 else
@@ -32,7 +31,7 @@ else
 fi
 
 # -------------------------------------------------------
-# 3. Instala Docker Compose (plugin moderno)
+# 3. Instala Docker Compose plugin
 # -------------------------------------------------------
 echo "🐳 Instalando Docker Compose..."
 if ! docker compose version &> /dev/null; then
@@ -43,8 +42,7 @@ else
 fi
 
 # -------------------------------------------------------
-# 4. Configura swap (pequeno — 24GB RAM é mais que suficiente,
-#    mas swap evita OOM killer em picos pontuais)
+# 4. Configura swap (4GB — evita OOM em picos pontuais)
 # -------------------------------------------------------
 echo "💾 Configurando SWAP (4GB)..."
 if [ ! -f /swapfile ]; then
@@ -58,35 +56,39 @@ else
     echo "✅ Swap já configurado."
 fi
 
-# Swappiness baixa — RAM é abundante, só usa swap em emergência
 sysctl vm.swappiness=5
 echo "vm.swappiness=5" >> /etc/sysctl.conf
 
 # -------------------------------------------------------
 # 5. Cria estrutura de diretórios para volumes
+#    Todos os volumes ficam em /opt/siaa/volumes/
+#    separados de qualquer serviço
 # -------------------------------------------------------
 echo "📁 Criando estrutura de diretórios..."
 PROJECT_DIR="/opt/siaa"
+
 mkdir -p "$PROJECT_DIR/volumes/siaa-data/contexts"
 mkdir -p "$PROJECT_DIR/volumes/siaa-model"
 mkdir -p "$PROJECT_DIR/volumes/ollama-data"
+mkdir -p "$PROJECT_DIR/volumes/vault-data"
+mkdir -p "$PROJECT_DIR/volumes/proxy-data"
+mkdir -p "$PROJECT_DIR/src/siaa"
+mkdir -p "$PROJECT_DIR/src/siaa_vault"
+mkdir -p "$PROJECT_DIR/src/siaa_proxy"
 
-# Permissões para o usuário ubuntu
 chown -R ubuntu:ubuntu "$PROJECT_DIR" 2>/dev/null || true
-
 echo "✅ Diretórios criados em $PROJECT_DIR"
 
 # -------------------------------------------------------
-# 6. Regras de firewall (Oracle Cloud usa iptables)
+# 6. Firewall (Oracle Cloud usa iptables)
+#    O Siaa só precisa de saída para Telegram — sem portas abertas
 # -------------------------------------------------------
 echo "🔥 Configurando firewall..."
-# Oracle Cloud bloqueia portas por padrão — o Siaa usa só Telegram (saída)
-# Nenhuma porta de entrada é necessária para o bot funcionar
 iptables -I INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
 echo "✅ Firewall configurado."
 
 # -------------------------------------------------------
-# 7. Instrucções finais
+# 7. Instruções finais
 # -------------------------------------------------------
 echo ""
 echo "============================================="
@@ -101,16 +103,26 @@ echo "   cd $PROJECT_DIR"
 echo ""
 echo "2. Configure o .env:"
 echo "   cp .env.example .env"
-echo "   nano .env  # preencha TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, OLLAMA_URL"
+echo "   nano .env"
 echo ""
-echo "3. Copie o dataset para o volume:"
-echo "   cp volumes/siaa-data/intent_dataset.json $PROJECT_DIR/volumes/siaa-data/"
+echo "3. Suba a stack completa:"
+echo "   make up"
 echo ""
-echo "4. Inicie o bot:"
-echo "   docker compose up -d --build"
+echo "4. Baixe o modelo LLM:"
+echo "   make pull-model"
 echo ""
-echo "5. Veja os logs:"
-echo "   docker compose logs -f"
+echo "5. Acompanhe os logs:"
+echo "   make logs"
 echo ""
-echo "⚠️  IMPORTANTE: Faça logout e login novamente para usar Docker sem sudo."
+echo "📁 Estrutura de serviços:"
+echo "   siaa        → bot principal  (src/siaa/)"
+echo "   siaa-vault  → cofre          (src/siaa_vault/)"
+echo "   siaa-proxy  → proxy          (src/siaa_proxy/)"
+echo "   ollama      → LLM local"
+echo ""
+echo "📁 Volumes em: $PROJECT_DIR/volumes/"
+echo "   siaa-data/   ollama-data/   vault-data/"
+echo "   siaa-model/  proxy-data/"
+echo ""
+echo "⚠️  Faça logout e login novamente para usar Docker sem sudo."
 echo "============================================="

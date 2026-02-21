@@ -1,5 +1,6 @@
 # =============================================================
-# SIAA — Docker Compose (Versão Local Corrigida)
+# SIAA — Docker Compose
+# Target: Oracle Cloud Free Tier — ARM64 Ampere A1
 # =============================================================
 services:
 
@@ -10,14 +11,8 @@ services:
     image: ollama/ollama:latest
     container_name: siaa-ollama
     restart: unless-stopped
-
     volumes:
       - ollama-data:/root/.ollama
-
-    # Portas comentadas para evitar conflito com o Ollama do sistema (Pop!_OS)
-    # ports:
-    #   - "127.0.0.1:11434:11434"
-
     deploy:
       resources:
         limits:
@@ -25,19 +20,12 @@ services:
           memory: 12G
         reservations:
           memory: 2G
-
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
       interval: 30s
       timeout: 10s
       retries: 5
       start_period: 30s
-
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "5"
 
   # -----------------------------------------------------------
   # 2. OLLAMA-INIT — Pull automático do modelo
@@ -49,13 +37,14 @@ services:
       - ollama
     env_file:
       - .env
-    entrypoint: [ "sh", "-c" ]
+    entrypoint: ["sh", "-c"]
     command:
       - |
-        echo "⏳ Aguardando Ollama iniciar..."
+        echo "⏳ Aguardando Ollama..."
         sleep 10
         echo "📦 Baixando modelo: $${OLLAMA_MODEL_CHAT:-granite3.3:2b}..."
-        curl -X POST http://ollama:11434/api/pull -d "{\"name\": \"$${OLLAMA_MODEL_CHAT:-granite3.3:2b}\"}"
+        curl -X POST http://ollama:11434/api/pull \
+          -d "{\"name\": \"$${OLLAMA_MODEL_CHAT:-granite3.3:2b}\"}"
         echo "✅ Modelo pronto!"
 
   # -----------------------------------------------------------
@@ -64,25 +53,24 @@ services:
   siaa:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: src/siaa/Dockerfile
     container_name: siaa-bot
     restart: unless-stopped
-
-    # Dependência simplificada para evitar erro de 'unhealthy' no boot
     depends_on:
       - ollama
-
+      - siaa-proxy
     env_file:
       - .env
-
     environment:
+      # --- Força o treinamento na inicialização ---
+      FORCE_TRAIN: "true" 
       SIAA_DATA_DIR: /siaa-data
-      OLLAMA_URL: http://ollama:11434/api/generate
-
+      OLLAMA_URL: http://siaa-ollama:11434
+      PROXY_SERVER_URL: http://siaa-proxy:8001
+      PYTHONUNBUFFERED: "1"
     volumes:
       - siaa-data:/siaa-data
-      - siaa-model:/app/core
-
+      # Código é lido direto da imagem (sem volumes para core)
     deploy:
       resources:
         limits:
@@ -90,22 +78,40 @@ services:
           memory: 10G
         reservations:
           memory: 512M
-
     healthcheck:
       test: ["CMD", "pgrep", "-f", "python.*app.py"]
       interval: 60s
       timeout: 10s
       retries: 3
-      start_period: 60s
-
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "5"
 
+  # -----------------------------------------------------------
+  # 4. SIAA-PROXY — Proxy para serviços externos
+  # -----------------------------------------------------------
+  siaa-proxy:
+    build:
+      context: .
+      dockerfile: src/siaa_proxy/Dockerfile
+    container_name: siaa-proxy
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    env_file:
+      - .env
+    volumes:
+      - proxy-data:/proxy-data
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+
 # =============================================================
-# VOLUMES — bind mounts para persistência de dados
+# VOLUMES
 # =============================================================
 volumes:
   siaa-data:
@@ -115,16 +121,23 @@ volumes:
       o: bind
       device: ./volumes/siaa-data
 
-  siaa-model:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: ./volumes/siaa-model
-
   ollama-data:
     driver: local
     driver_opts:
       type: none
       o: bind
       device: ./volumes/ollama-data
+
+  proxy-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./volumes/proxy-data
+
+  vault-data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./volumes/vault-data

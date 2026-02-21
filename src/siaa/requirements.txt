@@ -1,5 +1,5 @@
 # =============================================================
-# SIAA — Dependências Python
+# SIAA BOT — Dependências Python
 # Target: Oracle Cloud Free Tier ARM64 (4 OCPU / 24GB RAM)
 # =============================================================
 
@@ -22,3 +22,9 @@ torchaudio==2.1.0
 
 # --- Utilitários ---
 colorama==0.4.6
+apscheduler==3.10.4    
+
+# --- Adições Seguras para Integração ---
+aiohttp==3.9.3 
+httpx==0.25.2
+loguru==0.7.2

@@ -1,17 +1,15 @@
 import os
 import re
 import time
-
+import asyncio
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 
 # ------------------------------------------------------------------
-# Função de limpeza — precisa estar aqui para o Pickle do SVM
-# carregar corretamente no contexto do app.
+# 0. PRE-PROCESSAMENTO (Obrigatório para o SVM)
 # ------------------------------------------------------------------
-def pre_process(text):
-    """Garante que '?' seja tratado como token isolado."""
+def pre_process(text: str) -> str:
     if not isinstance(text, str):
         return ""
     text = text.lower()
@@ -19,24 +17,14 @@ def pre_process(text):
     text = re.sub(r"[^a-z0-9\s\?]", "", text)
     return text
 
-
-# ------------------------------------------------------------------
-# Módulos internos
-# Estrutura nova:
-#   src/siaa/
-#     core/         ← memory_manager, agent, intent_handler
-#     entities/
-#     memory_actions/
-#     web_actions/
-#     cron_jobs/
-#     user_interactions/
-# ------------------------------------------------------------------
+# Imports do Core
 from core.memory_manager import MemoryManager
 from core.agent import CynbotAgent
 from core.audio_handler import handle_voice
+from core.module_loader import load_crons
 
 # ------------------------------------------------------------------
-# 1. CONFIGURAÇÕES E INICIALIZAÇÃO
+# 1. INICIALIZAÇÃO DE AMBIENTE E CORE
 # ------------------------------------------------------------------
 load_dotenv()
 
@@ -44,103 +32,136 @@ TOKEN   = os.getenv("TELEGRAM_TOKEN")
 AUTH_ID = os.getenv("TELEGRAM_CHAT_ID")
 TIMEOUT = int(os.getenv("SESSION_TIMEOUT", 300))
 
-print("🔄 Inicializando Memória e Configurações...")
+print("🔄 Inicializando Memória...")
 memory = MemoryManager()
 
-print("📚 Consolidando Memória de Médio Prazo (Broader Context)...")
+# Nota: Se o Ollama demorar, o bot ficará parado aqui até terminar o resumo.
+# Isso é normal no primeiro boot.
+print("📚 Consolidando Memória (Pode demorar se o Ollama estiver carregando)...")
 memory.run_maintenance()
 
-print("🤖 Inicializando Agente Principal...")
+print("🤖 Inicializando Agente e Módulos...")
 agent = CynbotAgent(memory)
 
 # ------------------------------------------------------------------
-# 2. CONTROLE DE ESTADO E SESSÃO
+# 2. ESTADO DE SESSÃO
 # ------------------------------------------------------------------
 session: dict = {
     "history":    "",
     "last_time":  time.time(),
-    "close_next": False,
 }
 
 processed: set = set()
 BOOT_TIME = time.time()
 
 # ------------------------------------------------------------------
-# 3. HANDLERS
+# 3. HELPERS E HANDLERS
 # ------------------------------------------------------------------
+
+async def send_safe_reply(update: Update, text: str):
+    """Envia mensagem e evita crash por Markdown mal formatado pela IA."""
+    try:
+        await update.message.reply_text(text, parse_mode="Markdown")
+    except Exception as e:
+        print(f"⚠️ Erro de Markdown no Telegram (enviando texto puro): {e}")
+        await update.message.reply_text(text)
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid      = update.update_id
     user_id  = str(update.effective_chat.id)
     msg_text = update.message.text
     msg_ts   = update.message.date.timestamp()
 
-    print(f"\n{'='*55}")
-    print(f"📩 uid={uid} | user={user_id} | ts={msg_ts:.0f}")
-    print(f"📝 '{msg_text}'")
-
-    # Filtros de segurança e duplicidade
-    if msg_ts < BOOT_TIME:
-        print("⏭️  Pré-boot, ignorando.")
+    # Ignora mensagens antigas do histórico do Telegram (pré-boot)
+    if msg_ts < BOOT_TIME or uid in processed:
         return
-
-    if uid in processed:
-        print("⚠️  Duplicado, ignorando.")
-        return
-
     processed.add(uid)
-    if len(processed) > 200:
-        processed.discard(min(processed))
 
+    # Segurança: Só responde ao dono
     if user_id != AUTH_ID:
-        print("🚫 Não autorizado.")
+        print(f"🚫 Acesso negado: {user_id}")
         return
 
-    # Controle de timeout da sessão
-    now     = time.time()
-    elapsed = now - session["last_time"]
-
-    if session["close_next"] or elapsed > TIMEOUT:
-        reason = "ação concluída" if session["close_next"] else f"timeout {elapsed:.0f}s"
-        print(f"🔄 Sessão resetada ({reason}).")
-        session["history"]    = ""
-        session["close_next"] = False
-
-    # Processamento via agente
-    print("▶️  Processando no Núcleo de IA...")
-    intent, reply, close = agent.process(msg_text, session["history"])
-
-    if close:
-        print(f"🏁 Sessão de assunto encerrada ({intent}).")
-        memory.save_memory(intent, msg_text, reply)
-        session["close_next"] = True
-    else:
-        session["history"] += f"\nUsuário: {msg_text}\n{memory.bot_name}: {reply}"
-
+    # Gestão de Sessão (Limpa histórico se ficar muito tempo sem falar)
+    now = time.time()
+    if now - session["last_time"] > TIMEOUT:
+        session["history"] = ""
+        print("⏱️ Sessão expirada, histórico limpo.")
     session["last_time"] = now
-    await update.message.reply_text(reply)
 
-
-async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if str(update.effective_chat.id) != AUTH_ID:
-        print("🚫 Áudio não autorizado.")
+    # Execução Principal (to_thread impede que o bot "congele" durante o processamento)
+    try:
+        # Aqui a SVM vai printar o log no console do Docker
+        intent, reply, close = await asyncio.to_thread(
+            agent.process, msg_text, session["history"]
+        )
+    except Exception as e:
+        print(f"🔥 Erro Crítico no Agente: {e}")
+        await update.message.reply_text("Tive um problema ao processar. Pode repetir?")
         return
 
-    print(f"\n{'='*55}")
-    print("🎤 Áudio recebido.")
-    await handle_voice(update, context, agent, session, memory)
+    # Resposta ao Usuário
+    await send_safe_reply(update, reply)
 
+    # Persistência de Memória se a interação foi concluída
+    if close:
+        memory.save_memory(intent, msg_text, reply)
+        # Atualiza o histórico de chat da sessão atual
+        session["history"] += f"\nUsuário: {msg_text}\n{memory.bot_name}: {reply}"
+        session["history"]  = session["history"][-2000:] # Mantém apenas o final
+
+async def handle_voice_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Delega o processamento de áudio para o core."""
+    try:
+        # O audio_handler deve transcrever e retornar o texto ou processar direto
+        await handle_voice(update, context, agent, session, memory)
+    except Exception as e:
+        print(f"❌ Erro no processamento de voz: {e}")
+        await update.message.reply_text("Não consegui processar seu áudio.")
 
 # ------------------------------------------------------------------
-# 4. LOOP PRINCIPAL
+# 4. REGISTRO DE CRONS (Agendamentos dos Módulos)
 # ------------------------------------------------------------------
-if __name__ == "__main__":
+def register_crons(app: Application):
+    scheduler = app.job_queue
+    if not scheduler:
+        print("⚠️ JobQueue não disponível. Instale 'python-telegram-bot[job-queue]'")
+        return
+
+    crons = load_crons(memory)
+    for cron in crons:
+        schedule = cron.get_schedule()
+        trigger  = schedule.pop("trigger", "interval")
+        cron.bot_send = app.bot.send_message
+
+        if trigger == "interval":
+            scheduler.run_repeating(
+                callback=lambda ctx, c=cron: c.run(AUTH_ID),
+                interval=schedule.get("minutes", 60) * 60,
+                first=10,
+            )
+        print(f"⏰ Cron registrado: {cron.__class__.__name__}")
+
+# ------------------------------------------------------------------
+# 5. EXECUÇÃO
+# ------------------------------------------------------------------
+def main():
     if not TOKEN:
-        print("❌ ERRO: TELEGRAM_TOKEN não configurado no .env")
-        exit(1)
+        print("❌ TELEGRAM_TOKEN não configurado no .env")
+        return
 
+    # Build da Aplicação
     app = Application.builder().token(TOKEN).build()
+    
+    # Handlers
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(MessageHandler(filters.VOICE, handle_audio))
+    app.add_handler(MessageHandler(filters.VOICE, handle_voice_msg))
 
-    print(f"🚀 {memory.bot_name} online para {memory.user_name}!")
-    app.run_polling(drop_pending_updates=True)
+    # Ativa agendamentos (se houver)
+    register_crons(app)
+
+    print(f"\n🚀 {memory.bot_name} online! Aguardando mensagens no Docker...\n")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+if __name__ == "__main__":
+    main()

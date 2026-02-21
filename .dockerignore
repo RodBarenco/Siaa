@@ -1,0 +1,6 @@
+**/*.pkl
+**/__pycache__
+*.pyc
+.git
+.env
+volumes/
