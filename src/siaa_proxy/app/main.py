@@ -1,17 +1,39 @@
+"""
+app/main.py
+"""
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from loguru import logger
 
 from app.config import settings
-from app.database import init_db
+from app.database import init_db, AsyncSessionLocal
 from app.jobs.scheduler import setup_jobs
 from app.routes import proxy_routes, token_routes, job_routes
+from app.routes.current_token_route import router as internal_router
+
+
+async def _provision_initial_token():
+    """No startup, garante que existe pelo menos um token ativo."""
+    from sqlalchemy import select, func
+    from app.models.token import APIToken
+    from app.services.token_rotator import rotate_token
+
+    async with AsyncSessionLocal() as db:
+        count = await db.scalar(
+            select(func.count(APIToken.id)).where(APIToken.is_active == True)
+        )
+        if count == 0:
+            await rotate_token(db)
+            logger.info("🔑 Nenhum token encontrado — token inicial gerado.")
+        else:
+            logger.info(f"🔑 {count} token(s) ativo(s) no banco.")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info(f"🚀 Iniciando {settings.APP_NAME}...")
     await init_db()
+    await _provision_initial_token()
     setup_jobs()
     yield
     logger.info("🛑 Encerrando servidor.")
@@ -27,6 +49,7 @@ app = FastAPI(
 app.include_router(proxy_routes.router)
 app.include_router(token_routes.router)
 app.include_router(job_routes.router)
+app.include_router(internal_router)   # GET /internal/current-token
 
 
 @app.get("/", tags=["Health"])

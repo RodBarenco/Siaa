@@ -1,97 +1,179 @@
 """
-framework/siaa_proxy_client.py
+framework/siaa_proxy_client.py — versão com renovação automática de token
 
-Interface do Siaa para consumir o siaa-proxy server.
-
-Configuração no .env do siaa:
-    PROXY_SERVER_URL=http://siaa-proxy:8000   (container)
-    PROXY_SERVER_URL=http://localhost:8000    (local)
-    PROXY_API_TOKEN=seu_token_aqui
+Substitui o siaa_proxy_client.py anterior.
 """
 
 import os
+import time
 import requests
 
 
 class SiaaProxyClient:
-    def __init__(self):
-        self.base_url = os.getenv("PROXY_SERVER_URL", "").rstrip("/")
-        self.token    = os.getenv("PROXY_API_TOKEN", "")
-        self.timeout  = int(os.getenv("PROXY_CLIENT_TIMEOUT", "30"))
+    # Token compartilhado em memória entre instâncias (class-level)
+    _cached_token:   str | None = None
+    _token_expires:  float      = 0       # timestamp unix
 
-        if not self.base_url:
-            raise RuntimeError("PROXY_SERVER_URL não definido — proxy desabilitado.")
+    def __init__(self):
+        self._base       = os.getenv("PROXY_SERVER_URL", "").rstrip("/")
+        self._secret_key = os.getenv("PROXY_SECRET_KEY", "")
+
+        if not self._base:
+            raise RuntimeError("PROXY_SERVER_URL não configurado.")
+
+        token_status = f"token={'✅ em cache' if self._cached_token else '⏳ será buscado'}"
+        print(f"🔌 SiaaProxyClient → {self._base} ({token_status})")
+
+    # ------------------------------------------------------------------
+    # Renovação automática de token
+    # ------------------------------------------------------------------
+
+    def _get_token(self) -> str | None:
+        """
+        Retorna o token atual. Se expirado ou ausente, busca /internal/current-token.
+        Usa margem de 5min para renovar antes de expirar de fato.
+        """
+        margin = 5 * 60  # 5 minutos em segundos
+        now    = time.time()
+
+        if SiaaProxyClient._cached_token and now < (SiaaProxyClient._token_expires - margin):
+            return SiaaProxyClient._cached_token
+
+        print("🔄 Token expirado ou ausente — buscando novo token...")
+        try:
+            r = requests.get(
+                f"{self._base}/internal/current-token",
+                headers={"X-Secret-Key": self._secret_key},
+                timeout=5,
+            )
+            print(f"   /internal/current-token → HTTP {r.status_code}")
+
+            if r.status_code == 200:
+                data = r.json()
+                SiaaProxyClient._cached_token = data["token"]
+
+                # Converte expires_at ISO → timestamp unix
+                if data.get("expires_at"):
+                    from datetime import datetime, timezone
+                    dt = datetime.fromisoformat(data["expires_at"])
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    SiaaProxyClient._token_expires = dt.timestamp()
+                else:
+                    # Sem vencimento → renova daqui 1h por precaução
+                    SiaaProxyClient._token_expires = now + 3600
+
+                print(f"   ✅ Novo token obtido (expira: {data.get('expires_at', 'nunca')})")
+                return SiaaProxyClient._cached_token
+
+            elif r.status_code == 403:
+                print("   ❌ PROXY_SECRET_KEY incorreta — verifique o .env do siaa")
+            else:
+                print(f"   ⚠️  Resposta inesperada: {r.status_code} {r.text[:100]}")
+
+        except requests.exceptions.ConnectionError:
+            print(f"   ❌ siaa-proxy inacessível em {self._base}")
+        except Exception as e:
+            print(f"   ❌ Erro ao buscar token: {e}")
+
+        return SiaaProxyClient._cached_token  # usa o último válido como fallback
 
     @property
     def _headers(self) -> dict:
-        return {"X-API-Token": self.token, "Content-Type": "application/json"}
+        token = self._get_token()
+        return {"X-API-Token": token or ""}
 
-    def _get_best_proxy(self) -> dict | None:
+    # ------------------------------------------------------------------
+    # Proxy HTTP rotativo
+    # ------------------------------------------------------------------
+
+    def _get_best_proxy_url(self) -> str | None:
         try:
-            r = requests.get(f"{self.base_url}/proxies/best",
-                             headers=self._headers, timeout=5)
+            r = requests.get(
+                f"{self._base}/proxies/best",
+                headers=self._headers,
+                timeout=5,
+            )
+            print(f"   /proxies/best → HTTP {r.status_code}")
+
             if r.status_code == 200:
-                data = r.json()
-                user, pwd = data.get("username"), data.get("password")
-                proto, host, port = data.get("protocol","http"), data.get("host"), data.get("port")
-                url = (f"{proto}://{user}:{pwd}@{host}:{port}" if user and pwd
-                       else f"{proto}://{host}:{port}")
-                return {"url": url, **data}
+                p = r.json()
+                auth = ""
+                if p.get("username") and p.get("password"):
+                    auth = f"{p['username']}:{p['password']}@"
+                url = f"{p['protocol']}://{auth}{p['host']}:{p['port']}"
+                print(f"   ✅ Proxy: {p['host']}:{p['port']} ({p.get('latency_ms', '?')}ms)")
+                return url
+            elif r.status_code == 401:
+                print("   ❌ Token inválido — forçando renovação...")
+                SiaaProxyClient._cached_token  = None
+                SiaaProxyClient._token_expires  = 0
             elif r.status_code == 404:
-                print("⚠️  Nenhum proxy validado disponível.")
+                print("   ⚠️  Nenhum proxy validado disponível no banco")
+            else:
+                print(f"   ⚠️  {r.status_code}: {r.text[:100]}")
+
+        except requests.exceptions.ConnectionError:
+            print(f"   ❌ siaa-proxy inacessível em {self._base}")
         except Exception as e:
-            print(f"⚠️  siaa-proxy inacessível: {e}")
+            print(f"   ❌ Erro inesperado: {e}")
         return None
 
-    def get(self, url: str, params: dict = None, timeout: int = None) -> dict | None:
-        try:
-            proxy_info = self._get_best_proxy()
-            if not proxy_info:
-                return None
-            proxies = {"http": proxy_info["url"], "https": proxy_info["url"]}
-            r = requests.get(url, params=params, proxies=proxies,
-                             timeout=timeout or self.timeout)
-            r.raise_for_status()
-            return r.json()
-        except Exception as e:
-            print(f"⚠️  SiaaProxyClient.get: {e}")
-            return None
+    def _proxies_dict(self) -> dict | None:
+        url = self._get_best_proxy_url()
+        return {"http": url, "https": url} if url else None
 
-    def post(self, url: str, json: dict = None, timeout: int = None) -> dict | None:
-        try:
-            proxy_info = self._get_best_proxy()
-            if not proxy_info:
-                return None
-            proxies = {"http": proxy_info["url"], "https": proxy_info["url"]}
-            r = requests.post(url, json=json, proxies=proxies,
-                              timeout=timeout or self.timeout)
-            r.raise_for_status()
-            return r.json()
-        except Exception as e:
-            print(f"⚠️  SiaaProxyClient.post: {e}")
-            return None
+    # ------------------------------------------------------------------
+    # GET / POST / BROWSE (igual ao anterior)
+    # ------------------------------------------------------------------
 
-    def browse(self, url: str, extract: str = "text",
-               wait_for: str = None, use_proxy: bool = True) -> str | None:
+    def get(self, url: str, params: dict = None, timeout: int = 10) -> dict | None:
+        proxies = self._proxies_dict()
+        print(f"   {'🌐 GET via proxy' if proxies else '⚠️  GET direto'} → {url}")
         try:
-            payload = {"url": url, "use_proxy": use_proxy, "extract": extract}
-            if wait_for:
-                payload["wait_for"] = wait_for
-            r = requests.post(f"{self.base_url}/proxies/browse",
-                              headers=self._headers, json=payload, timeout=60)
+            r = requests.get(url, params=params, proxies=proxies, timeout=timeout)
+            r.raise_for_status()
+            print(f"   ✅ GET OK (HTTP {r.status_code})")
+            return r.json()
+        except requests.exceptions.Timeout:
+            print(f"   ⏱️  Timeout: {url}")
+        except requests.exceptions.RequestException as e:
+            print(f"   ❌ GET falhou: {e}")
+        return None
+
+    def post(self, url: str, json: dict = None, timeout: int = 10) -> dict | None:
+        proxies = self._proxies_dict()
+        print(f"   {'🌐 POST via proxy' if proxies else '⚠️  POST direto'} → {url}")
+        try:
+            r = requests.post(url, json=json, proxies=proxies, timeout=timeout)
+            r.raise_for_status()
+            print(f"   ✅ POST OK (HTTP {r.status_code})")
+            return r.json()
+        except requests.exceptions.RequestException as e:
+            print(f"   ❌ POST falhou: {e}")
+        return None
+
+    def browse(self, url: str, extract: str = "text", wait_for: str = None, timeout: int = 30) -> str | None:
+        print(f"   🎭 BROWSE → {url}")
+        payload = {"url": url, "use_proxy": True, "extract": extract}
+        if wait_for:
+            payload["wait_for"] = wait_for
+        try:
+            r = requests.post(
+                f"{self._base}/proxies/browse",
+                headers=self._headers,
+                json=payload,
+                timeout=timeout,
+            )
+            print(f"   /proxies/browse → HTTP {r.status_code}")
             r.raise_for_status()
             data = r.json()
             if data.get("success"):
+                print(f"   ✅ BROWSE OK ({len(data.get('content', ''))} chars)")
                 return data.get("content")
-            print(f"⚠️  browse erro: {data.get('error')}")
-        except Exception as e:
-            print(f"❌ SiaaProxyClient.browse [{url}]: {e}")
+            print(f"   ⚠️  BROWSE falhou: {data.get('error', '?')}")
+        except requests.exceptions.Timeout:
+            print(f"   ⏱️  Timeout no browse")
+        except requests.exceptions.RequestException as e:
+            print(f"   ❌ BROWSE erro: {e}")
         return None
-
-    def stats(self) -> dict | None:
-        try:
-            r = requests.get(f"{self.base_url}/proxies/stats",
-                             headers=self._headers, timeout=5)
-            return r.json() if r.status_code == 200 else None
-        except Exception:
-            return None
