@@ -13,20 +13,32 @@ from app.routes.current_token_route import router as internal_router
 
 
 async def _provision_initial_token():
-    """No startup, garante que existe pelo menos um token ativo."""
+    """
+    No startup, garante que existe pelo menos um token ativo e não expirado.
+    Se o token existente estiver expirado, rotaciona imediatamente.
+    """
+    from datetime import datetime
     from sqlalchemy import select, func
     from app.models.token import APIToken
     from app.services.token_rotator import rotate_token
 
     async with AsyncSessionLocal() as db:
+        now = datetime.utcnow()
+
+        # Conta apenas tokens ativos E não expirados
         count = await db.scalar(
-            select(func.count(APIToken.id)).where(APIToken.is_active == True)
+            select(func.count(APIToken.id)).where(
+                APIToken.is_active == True,
+                (APIToken.expires_at == None) | (APIToken.expires_at > now),
+            )
         )
+
         if count == 0:
+            logger.info("🔑 Nenhum token válido encontrado — gerando novo token...")
             await rotate_token(db)
-            logger.info("🔑 Nenhum token encontrado — token inicial gerado.")
+            logger.info("🔑 Token inicial gerado.")
         else:
-            logger.info(f"🔑 {count} token(s) ativo(s) no banco.")
+            logger.info(f"🔑 {count} token(s) ativo(s) e válido(s) no banco.")
 
 
 @asynccontextmanager
@@ -52,8 +64,13 @@ app.include_router(job_routes.router)
 app.include_router(internal_router)   # GET /internal/current-token
 
 
-@app.get("/", tags=["Health"])
+@app.get("/health", tags=["Health"])
 async def health():
+    return {"status": "ok", "app": settings.APP_NAME}
+
+
+@app.get("/", tags=["Health"])
+async def root():
     return {"status": "ok", "app": settings.APP_NAME}
 
 

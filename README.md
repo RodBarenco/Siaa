@@ -1,11 +1,13 @@
 
-
 ---
-Nesse projeto, você também pode encrontar já de forma funcional o [![Siaa-Proxy](https://img.shields.io/badge/Service-Siaa--Proxy-blue?style=flat-square&logo=docker)](./src/siaa-proxy/README.md)
 
 # 🤖 Siaa — Scaffoldable IA Assistant
 
 > **Nota:** Este é um **projeto pessoal** desenvolvido para facilitar a organização diária e a gestão de tarefas através de uma interface inteligente, modular e escalável.
+
+Nesse projeto, você também pode encontrar já de forma funcional os microsserviços de infraestrutura:
+[](https://www.google.com/search?q=src/siaa-proxy/) [](https://www.google.com/search?q=src/siaa-vault/)
+
 ---
 
 ## 🧠 A Filosofia do Projeto
@@ -26,30 +28,29 @@ O foco está na experiência do desenvolvedor (DX). A arquitetura modular permit
 * **A Meta:** Finalizar o sistema de **Scaffolding** para que a implementação de um novo módulo leve apenas **alguns minutos**. Criar, acoplar e rodar — essa é a agilidade que buscamos.
 
 ---
-🎯 Intenções Ativas (SVM Core)
 
-Intenção	Descrição	Status
-AGENDA_*	Gestão de compromissos (Adicionar, Listar, Remover)	✅ Ativo
-FINANCE_*	Controle financeiro pessoal e gastos	✅ Ativo
-WEATHER	Consulta de meteorologia em tempo real (via Proxy)	✅ Ativo
-MEMORY_SEARCH	Busca contextual no histórico de conversas	✅ Ativo
-CHAT	Conversação genérica e interações sociais	✅ Ativo
+## 🎯 Intenções Ativas (SVM Core)
 
-✅ Resultados de Validação (Teste Rápido):
+| Intenção | Descrição | Status |
+| --- | --- | --- |
+| `AGENDA_*` | Gestão de compromissos (Adicionar, Listar, Remover) | ✅ Ativo |
+| `FINANCE_*` | Controle financeiro pessoal e gastos | ✅ Ativo |
+| `WEATHER` | Consulta de meteorologia em tempo real (via Proxy) | ✅ Ativo |
+| `MEMORY_SEARCH` | Busca contextual no histórico de conversas | ✅ Ativo |
+| `CHAT` | Conversação genérica e interações sociais | ✅ Ativo |
 
-    'agenda medico amanha 10h' → AGENDA_ADD
+**✅ Resultados de Validação (Teste Rápido):**
 
-    'quanto gastei esse mês?' → FINANCE_LIST
-
-    'vai chover hoje?' → WEATHER
-
-    'o que falamos ontem?' → MEMORY_SEARCH
+* *'agenda medico amanha 10h'* → `AGENDA_ADD`
+* *'quanto gastei esse mês?'* → `FINANCE_LIST`
+* *'vai chover hoje?'* → `WEATHER`
+* *'o que falamos ontem?'* → `MEMORY_SEARCH`
 
 ---
 
 ## 🏗️ Arquitetura "Shield" (Em Desenvolvimento)
 
-O sistema foi pensando para utilizar um gateway **Nginx** como escudo frontal para mascarar o IP da VPS e centralizar a comunicação. A segurança interna é blindada por um sistema de **Handshake Dinâmico** com tokens rotativos.
+O sistema foi pensado para utilizar um gateway **Nginx** como escudo frontal para mascarar o IP da VPS e centralizar a comunicação. A segurança interna é blindada por um sistema de **Handshake Dinâmico** com tokens rotativos e cofres criptografados.
 
 ```text
 🌎 INTERNET (Telegram Webhooks)
@@ -71,13 +72,13 @@ O sistema foi pensando para utilizar um gateway **Nginx** como escudo frontal pa
 
 ## 📦 Ecossistema de Módulos
 
-O sistema é dividido em entidades funcionais, como o módulo de **Chat**, que gerencia interações genéricas e saudações.
+O sistema é dividido em entidades funcionais, como o módulo de Chat, que gerencia interações genéricas e saudações.
 
 | Módulo | Papel | Estado | Segurança |
 | --- | --- | --- | --- |
 | **Siaa-Bot** | Cérebro / Agente | ✅ Estável | Isolado na rede interna |
 | **Siaa-Proxy** | Saída Anônima | ✅ Ativo | Token Rotativo (Hora em Hora) |
-| **Siaa-Vault** | Gestão de Secrets | 🛠️ Integrando | Criptografia Fernet / Handshake |
+| **Siaa-Vault** | Gestão de Secrets | ✅ Ativo | Criptografia Fernet / JWT / Audit Log |
 | **Nginx** | Proteção de Borda | 🚧 WIP | Proxy Pass & Stealth Mode |
 
 ---
@@ -104,19 +105,82 @@ O sistema é dividido em entidades funcionais, como o módulo de **Chat**, que g
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Quick Start (Ecossistema Docker)
+
+A infraestrutura foi desenhada para rodar em containers geridos por `docker compose` e facilitados pelo nosso `Makefile`.
+
+### Passo 1: Preparar o Ambiente
+
+Clone o repositório e crie a estrutura de diretórios necessária para os volumes:
 
 ```bash
-# 1. Clone e configure
 git clone https://github.com/RodBarenco/Siaa.git
 cd Siaa
+make setup-dirs
 cp .env.example .env
 
-# 2. Suba a Fortaleza (Docker Compose agora inclui Nginx em progresso)
-docker compose up -d --build
+```
 
-# 3. Baixe o cérebro
-docker exec -it siaa-ollama ollama pull granite3.3:2b
+### Passo 2: Gerar Chaves de Segurança
+
+Edite o arquivo `.env` e gere chaves fortes para os serviços. Utilize os comandos abaixo no seu terminal para gerar os valores com segurança:
+
+```bash
+# MASTER_KEY (Vault - Criptografia Fernet)
+python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+
+# JWT_SECRET (Vault Auth)
+openssl rand -hex 32
+
+# ADMIN_PASSWORD (Vault Admin - Pode ser uma senha forte da sua escolha)
+openssl rand -hex 16
+
+# Chaves de Autenticação do Proxy (Handshake)
+openssl rand -hex 32
+
+```
+
+⚠️ **Atenção ao Proxy:** Para que o Bot e o Proxy consigam se comunicar, as variáveis `PROXY_SECRET_KEY` (lida pelo Bot) e `SECRET_KEY` (lida pelo Proxy) no seu `.env` **devem ter exatamente o mesmo valor** gerado pelo comando `openssl` acima.
+
+Exemplo no `.env`:
+
+```env
+PROXY_SECRET_KEY=sua_chave_gerada_aqui
+SECRET_KEY=sua_chave_gerada_aqui
+
+```
+
+### Passo 3: Subir a Infraestrutura
+
+Construa e inicie todos os containers (Ollama, Vault, Proxy e Bot):
+
+```bash
+make up
+
+```
+
+*(Nota: O script de inicialização cuidará de baixar o modelo Granite 3.3 automaticamente).*
+
+### Passo 4: Registrar o Bot no Vault (Obrigatório)
+
+Na primeira execução, o **Siaa-Bot** subirá, mas não terá autorização para acessar o cofre. Para gerar as credenciais do bot com permissão total (asterisco), execute:
+
+```bash
+make vault-register ID=siaa-bot NS='*' DESC='Bot principal'
+
+```
+
+O comando vai retornar um JSON com o `client_secret` gerado. Copie esse valor e cole no seu arquivo `.env`:
+
+```env
+VAULT_CLIENT_SECRET=valor-retornado-aqui
+
+```
+
+Após salvar o `.env`, reinicie o ecossistema para que o bot carregue a nova chave e se autentique com sucesso:
+
+```bash
+make restart
 
 ```
 
@@ -124,8 +188,6 @@ docker exec -it siaa-ollama ollama pull granite3.3:2b
 
 ## 🤝 Colaboração
 
-O Siaa é um projeto vivo e **aberto a colaborações**. Sinta-se à vontade para sugerir novos módulos, reportar bugs ou trabalhar na Suite de Testes. Se você gosta de arquitetura modular e quer ajudar a construir um assistente eficiente, junte-se ao projeto!
-
+O Siaa é um projeto vivo e aberto a colaborações. Sinta-se à vontade para sugerir novos módulos, reportar bugs ou trabalhar na Suite de Testes. Se você gosta de arquitetura modular e quer ajudar a construir um assistente eficiente, junte-se ao projeto!
 
 ---
-

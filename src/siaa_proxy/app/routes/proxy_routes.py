@@ -72,3 +72,9 @@ async def browse(body: BrowseBody, db: AsyncSession = Depends(get_db),
             proxy_url = proxy.url
     return await browse_url(url=body.url, proxy_url=proxy_url,
                              extract=body.extract, wait_for=body.wait_for)
+
+@router.post("/{proxy_id}/report-failure")
+async def report_proxy_failure(proxy_id: int, db: AsyncSession = Depends(get_db)):
+    """Rebaixa o proxy desativando-o e incrementando o failure_count"""
+    await ProxyController.mark_failed(db, proxy_id)
+    return {"status": "ok", "message": f"Proxy {proxy_id} rebaixado."}

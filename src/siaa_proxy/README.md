@@ -2,8 +2,6 @@
 
 > **Nota:** Este é um **projeto pessoal** integrante do ecossistema Siaa, desenvolvido para fornecer uma camada de anonimato e resiliência para buscas web, garantindo que o IP real da infraestrutura permaneça oculto.
 
-If you prefer to read it in [English](https://www.google.com/search?q=README.en.md) | Si prefieres leerlo en [Español](https://www.google.com/search?q=README.es.md)
-
 ---
 
 ## 🧠 Propósito e Filosofia

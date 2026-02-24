@@ -7,7 +7,8 @@
         pull-model pull list-models \
         logs-bot logs-ollama logs-vault logs-proxy \
         shell-ollama shell-vault shell-proxy \
-        up-bot up-vault up-proxy
+        up-bot up-vault up-proxy \
+        vault-register vault-audit
 
 GREEN  = \033[0;32m
 YELLOW = \033[1;33m
@@ -18,7 +19,7 @@ NC     = \033[0m
 help: ## Mostra esta ajuda
 	@echo "$(GREEN)SIAA — Comandos disponíveis:$(NC)"
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
-		awk 'BEGIN {FS = ":.*?## "}; {printf "  $(YELLOW)%-20s$(NC) %s\n", $$1, $$2}'
+		awk 'BEGIN {FS = ":.*?## "}; {printf "  $(YELLOW)%-22s$(NC) %s\n", $$1, $$2}'
 
 # --- Setup ---
 setup-dirs: ## Cria todos os diretórios de volume
@@ -43,23 +44,24 @@ build-proxy: ## Builda apenas o siaa-proxy
 	docker compose build siaa-proxy
 
 # --- Ciclo de vida completo ---
-up: setup-dirs ## Sobe toda a stack
+up: setup-dirs ## Sobe toda a stack (vault e proxy sobem antes do bot)
 	docker compose up -d
 	@echo "$(GREEN)✅ Stack rodando.$(NC)"
+	@echo "$(CYAN)   Ordem: vault → proxy → bot$(NC)"
 	@echo "$(CYAN)   Aguarde o Ollama iniciar antes do bot conectar (~30s)$(NC)"
 	@echo "   Use 'make logs' para acompanhar."
 
 down: ## Para todos os serviços
 	docker compose down
 
-restart: ## Reinicia apenas o bot (sem derrubar Ollama)
+restart: ## Reinicia apenas o bot (sem derrubar vault/proxy/ollama)
 	docker compose restart siaa
 
 restart-all: ## Reinicia toda a stack
 	docker compose restart
 
 # --- Subir serviços individuais ---
-up-bot: ## Sobe apenas o siaa (Ollama já deve estar rodando)
+up-bot: ## Sobe apenas o siaa (vault, proxy e ollama já devem estar rodando)
 	docker compose up -d siaa
 
 up-vault: ## Sobe apenas o siaa-vault
@@ -99,6 +101,26 @@ list-models: ## Lista modelos baixados no Ollama
 train: ## Força retreinamento do SVM de intenções
 	docker compose run --rm -e FORCE_TRAIN=true siaa python train_svm.py
 	@echo "$(GREEN)✅ SVM retreinado.$(NC)"
+
+# --- Vault ---
+vault-register: ## Registra um módulo no vault. Ex: make vault-register ID=modulo-multas NS=modulo-multas
+	@echo "$(CYAN)Registrando módulo '$(ID)' no vault...$(NC)"
+	@curl -s -X POST http://localhost:8002/admin/clients \
+		-H "X-Admin-Password: $$(grep ADMIN_PASSWORD .env | cut -d= -f2)" \
+		-H "Content-Type: application/json" \
+		-d "{\"client_id\": \"$(ID)\", \"allowed_namespaces\": \"$(NS)\", \"description\": \"$(DESC)\"}" \
+		| python3 -m json.tool
+	@echo "$(YELLOW)⚠️  Salve o client_secret acima — não será exibido novamente.$(NC)"
+
+vault-audit: ## Mostra o log de auditoria do vault (últimas 50 entradas)
+	@curl -s http://localhost:8002/admin/audit?limit=50 \
+		-H "X-Admin-Password: $$(grep ADMIN_PASSWORD .env | cut -d= -f2)" \
+		| python3 -m json.tool
+
+vault-clients: ## Lista os módulos registrados no vault
+	@curl -s http://localhost:8002/admin/clients \
+		-H "X-Admin-Password: $$(grep ADMIN_PASSWORD .env | cut -d= -f2)" \
+		| python3 -m json.tool
 
 # --- Shell de debug ---
 shell: ## Shell dentro do container do siaa

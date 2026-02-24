@@ -61,8 +61,6 @@ echo "vm.swappiness=5" >> /etc/sysctl.conf
 
 # -------------------------------------------------------
 # 5. Cria estrutura de diretórios para volumes
-#    Todos os volumes ficam em /opt/siaa/volumes/
-#    separados de qualquer serviço
 # -------------------------------------------------------
 echo "📁 Criando estrutura de diretórios..."
 PROJECT_DIR="/opt/siaa"
@@ -81,7 +79,8 @@ echo "✅ Diretórios criados em $PROJECT_DIR"
 
 # -------------------------------------------------------
 # 6. Firewall (Oracle Cloud usa iptables)
-#    O Siaa só precisa de saída para Telegram — sem portas abertas
+#    Vault e proxy ficam APENAS na rede interna Docker.
+#    Nenhuma porta interna é exposta externamente.
 # -------------------------------------------------------
 echo "🔥 Configurando firewall..."
 iptables -I INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
@@ -105,24 +104,33 @@ echo "2. Configure o .env:"
 echo "   cp .env.example .env"
 echo "   nano .env"
 echo ""
+echo "   Chaves obrigatórias a gerar:"
+echo "   MASTER_KEY  →  python3 -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""
+echo "   JWT_SECRET  →  openssl rand -hex 32"
+echo "   INTERNAL_SECRET_KEY  →  openssl rand -hex 32"
+echo "   ADMIN_PASSWORD  →  openssl rand -hex 16"
+echo ""
 echo "3. Suba a stack completa:"
 echo "   make up"
 echo ""
 echo "4. Baixe o modelo LLM:"
 echo "   make pull-model"
 echo ""
-echo "5. Acompanhe os logs:"
+echo "5. Registre o siaa-bot no vault:"
+echo "   make vault-register ID=siaa-bot NS='*' DESC='Bot principal'"
+echo "   # Salve o client_secret retornado no .env (VAULT_CLIENT_SECRET)"
+echo ""
+echo "6. Acompanhe os logs:"
 echo "   make logs"
 echo ""
 echo "📁 Estrutura de serviços:"
-echo "   siaa        → bot principal  (src/siaa/)"
-echo "   siaa-vault  → cofre          (src/siaa_vault/)"
-echo "   siaa-proxy  → proxy          (src/siaa_proxy/)"
+echo "   siaa        → bot principal   (src/siaa/)"
+echo "   siaa-vault  → cofre KV        (src/siaa_vault/)  porta 8002 (interna)"
+echo "   siaa-proxy  → proxy externo   (src/siaa_proxy/)  porta 8001 (interna)"
 echo "   ollama      → LLM local"
 echo ""
 echo "📁 Volumes em: $PROJECT_DIR/volumes/"
-echo "   siaa-data/   ollama-data/   vault-data/"
-echo "   siaa-model/  proxy-data/"
+echo "   siaa-data/   ollama-data/   vault-data/   proxy-data/"
 echo ""
 echo "⚠️  Faça logout e login novamente para usar Docker sem sudo."
 echo "============================================="

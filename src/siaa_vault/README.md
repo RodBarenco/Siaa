@@ -1,167 +1,192 @@
 # Siaa Vault 🔐
 
-Cofre de credenciais para os módulos do **Siaa** (Scaffoldable-IA-Assistant).
-Armazena usuários, senhas, CPF, tokens e dados pessoais com criptografia Fernet (AES-128-CBC).
+KV store cifrado por módulo para o ecossistema Siaa.
+Cada módulo tem seu próprio namespace e guarda o que precisar — sem julgamento de conteúdo.
 
-## Como funciona
+---
+
+## Conceito
 
 ```
-Módulo (siaa-bot)
-    │
-    ├─ POST /auth/token  (client_id + client_secret)
-    │       ↓ JWT válido por 15min
-    │
-    ├─ GET /secrets/enel-rj/all   [Bearer JWT]
-    │       ↓ {"username": "...", "password": "...", "cpf": "..."}
-    │
-    └─ (JWT expira → renova automaticamente)
+módulo-multas
+  ├── renavan          → "ABC-1234"         (cifrado)
+  ├── cpf              → "123.456.789-00"   (cifrado)
+  ├── cookie_sessao    → "eyJhbGc..."       (cifrado)
+  └── ultima_consulta  → "2024-01-15"       (cifrado)
+
+módulo-enel
+  ├── usuario          → "joao@email.com"   (cifrado)
+  ├── senha            → "s3nha!"           (cifrado)
+  ├── cpf              → "123.456.789-00"   (cifrado)
+  └── token_api        → "Bearer xyz"       (cifrado)
 ```
 
-**Segurança em camadas:**
-- Banco SQLite → valores cifrados com Fernet (ilegíveis sem `MASTER_KEY`)
-- `MASTER_KEY` → só no `.env`, nunca no banco
-- JWT → sessões curtas (15min), renovadas sob demanda
-- Audit log → todo acesso registrado (quem, quando, IP)
-- Namespaces → cada módulo acessa só o que precisa
+O vault não interpreta o que é cada valor. O módulo define as chaves, salva o que precisa, e recupera quando quiser. Cada módulo só acessa seu próprio namespace.
+
+---
+
+## Arquitetura de Segurança
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        SIAA VAULT                           │
+│                                                             │
+│  MASTER_KEY (.env)  →  cifra todos os values no banco       │
+│  JWT_SECRET (.env)  →  sessões curtas por módulo (15min)    │
+│  INTERNAL_KEY (.env)→  token rotativo para acesso interno   │
+│                                                             │
+│  Banco SQLite  →  apenas values cifrados (inúteis sem key)  │
+│  Audit log     →  todo acesso registrado (quem, quando, IP) │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
 
 ## Estrutura
 
 ```
-siaa-vault/
+siaa_vault/
 ├── app/
-│   ├── main.py
-│   ├── config.py
-│   ├── database.py
+│   ├── main.py                    # FastAPI + APScheduler
+│   ├── config.py                  # Settings via .env
+│   ├── database.py                # SQLAlchemy async
 │   ├── models/
-│   │   ├── vault_client.py   # Módulos registrados (siaa-bot, siaa-proxy...)
-│   │   ├── secret.py         # Credenciais cifradas (namespace/key/value)
-│   │   └── audit_log.py      # Log de todos os acessos
+│   │   ├── vault_client.py        # Módulos registrados
+│   │   ├── secret.py              # KV cifrado
+│   │   ├── audit_log.py           # Log imutável de acessos
+│   │   └── internal_token.py      # Tokens rotativos internos
 │   ├── controllers/
-│   │   ├── secret_controller.py   # CRUD com encrypt/decrypt
-│   │   └── client_controller.py   # Autenticação de módulos
+│   │   ├── client_controller.py   # Auth + CRUD de módulos
+│   │   └── secret_controller.py   # KV com encrypt/decrypt
 │   ├── routes/
-│   │   ├── auth_routes.py    # POST /auth/token
-│   │   ├── secret_routes.py  # GET|PUT|DELETE /secrets/...
-│   │   └── admin_routes.py   # /admin/* (senha de admin)
+│   │   ├── auth_routes.py         # POST /auth/token
+│   │   ├── secret_routes.py       # KV API
+│   │   ├── admin_routes.py        # /admin/* (X-Admin-Password)
+│   │   └── internal_routes.py     # /internal/* (token rotativo)
 │   ├── services/
-│   │   ├── crypto.py         # Fernet encrypt/decrypt
-│   │   └── jwt_service.py    # Criação e validação de JWT
+│   │   ├── crypto.py              # Fernet encrypt/decrypt
+│   │   ├── jwt_service.py         # Criação/validação JWT
+│   │   └── token_rotator.py       # APScheduler — rotação automática
 │   └── middlewares/
-│       └── auth.py           # Bearer JWT + controle de namespace
-├── siaa_vault_client.py      # SDK para usar no Siaa e módulos
+│       └── auth.py                # Deps: JWT, Admin, Internal Token
+├── siaa_vault_client.py           # SDK para os módulos
+├── Dockerfile
 ├── requirements.txt
 └── .env.example
 ```
 
-## Setup
-
-```bash
-# 1. Instale dependências
-pip install -r requirements.txt
-
-# 2. Gere a MASTER_KEY (UMA VEZ — não perca!)
-python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-
-# 3. Gere o JWT_SECRET
-openssl rand -hex 32
-
-# 4. Configure o .env
-cp .env.example .env
-# Cole as chaves geradas no .env
-
-# 5. Rode
-python -m app.main
-# Docs: http://localhost:8001/docs
-```
-
-## Uso — Admin
-
-```bash
-# Registrar o siaa-bot no vault
-curl -X POST http://localhost:8001/admin/clients \
-  -H "X-Admin-Password: sua-senha-admin" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "client_id": "siaa-bot",
-    "client_secret": "secret-forte-aqui",
-    "description": "Bot principal do Siaa",
-    "allowed_namespaces": "enel-rj,boletos,dados-pessoais"
-  }'
-
-# Ver audit log
-curl http://localhost:8001/admin/audit \
-  -H "X-Admin-Password: sua-senha-admin"
-```
-
-## Uso — Módulos
-
-```bash
-# 1. Autenticar e pegar JWT
-TOKEN=$(curl -s -X POST http://localhost:8001/auth/token \
-  -H "Content-Type: application/json" \
-  -d '{"client_id":"siaa-bot","client_secret":"secret-forte-aqui"}' \
-  | python -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
-
-# 2. Guardar credenciais da conta de luz
-curl -X PUT http://localhost:8001/secrets/enel-rj/username \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"namespace":"enel-rj","key":"username","value":"joao@email.com","secret_type":"credential"}'
-
-curl -X PUT http://localhost:8001/secrets/enel-rj/cpf \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"namespace":"enel-rj","key":"cpf","value":"123.456.789-00","secret_type":"personal_data"}'
-
-# 3. Buscar tudo de uma vez (o Siaa usa isso)
-curl http://localhost:8001/secrets/enel-rj/all \
-  -H "Authorization: Bearer $TOKEN"
-# → {"username": "joao@email.com", "password": "...", "cpf": "123..."}
-```
-
-## Integração com o Siaa (Python SDK)
-
-```python
-from siaa_vault_client import VaultClient
-
-vault = VaultClient(
-    base_url="http://localhost:8001",
-    client_id="siaa-bot",
-    client_secret="secret-forte-aqui",
-)
-
-# O token é renovado automaticamente quando expira
-creds = await vault.get_namespace("enel-rj")
-# → {"username": "joao@email.com", "password": "senha", "cpf": "123..."}
-
-# Usar com o proxy server para acessar o site da Enel
-proxy = await proxy_client.get_best()
-result = await browser.browse(
-    url="https://www.enel.com.br/login",
-    proxy_url=proxy["url"],
-    credentials=creds,
-)
-```
+---
 
 ## Endpoints
 
 | Método | Rota | Auth | Descrição |
 |--------|------|------|-----------|
-| POST | `/auth/token` | client_id+secret | Abre sessão JWT |
-| GET | `/secrets/namespaces` | JWT | Lista namespaces |
-| GET | `/secrets/{ns}` | JWT | Lista chaves (sem valores) |
-| GET | `/secrets/{ns}/all` | JWT | Todos os valores decifrados |
-| GET | `/secrets/{ns}/{key}` | JWT | Um valor decifrado |
-| PUT | `/secrets/{ns}/{key}` | JWT | Cria/atualiza segredo |
-| DELETE | `/secrets/{ns}/{key}` | JWT | Remove segredo |
-| POST | `/admin/clients` | Admin-Password | Registrar módulo |
-| GET | `/admin/clients` | Admin-Password | Listar módulos |
-| DELETE | `/admin/clients/{id}` | Admin-Password | Revogar módulo |
-| GET | `/admin/audit` | Admin-Password | Ver audit log |
+| POST | `/auth/token` | client_id + secret | JWT de sessão |
+| GET | `/secrets/namespaces` | JWT | Namespaces acessíveis |
+| GET | `/secrets/{ns}` | JWT | **Todos os valores** do namespace |
+| GET | `/secrets/{ns}/keys` | JWT | Chaves sem valores |
+| GET | `/secrets/{ns}/{key}` | JWT | Um valor |
+| PUT | `/secrets/{ns}/{key}` | JWT | Salvar ou atualizar |
+| DELETE | `/secrets/{ns}/{key}` | JWT | Remover uma chave |
+| DELETE | `/secrets/{ns}` | JWT | Remover namespace inteiro |
+| GET | `/internal/current-token` | X-Secret-Key | Token rotativo atual |
+| POST | `/admin/clients` | X-Admin-Password | Registrar módulo |
+| GET | `/admin/clients` | X-Admin-Password | Listar módulos |
+| DELETE | `/admin/clients/{id}` | X-Admin-Password | Revogar módulo |
+| GET | `/admin/audit` | X-Admin-Password | Log de auditoria |
+| GET | `/health` | — | Status |
+
+---
+
+## Setup
+
+```bash
+# 1. Gere a MASTER_KEY (UMA VEZ — nunca mude depois)
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+
+# 2. Gere JWT_SECRET e INTERNAL_SECRET_KEY
+openssl rand -hex 32
+openssl rand -hex 32
+
+# 3. Configure
+cp .env.example .env
+# cole as chaves geradas
+
+# 4. Rode
+pip install -r requirements.txt
+uvicorn app.main:app --host 0.0.0.0 --port 8002
+```
+
+---
+
+## Uso — Registrar módulo (admin)
+
+```bash
+curl -X POST http://localhost:8002/admin/clients \
+  -H "X-Admin-Password: sua-senha" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "client_id": "modulo-multas",
+    "description": "Consulta de multas via RENAVAN",
+    "allowed_namespaces": "modulo-multas"
+  }'
+# → retorna client_secret gerado automaticamente — guarde!
+```
+
+---
+
+## Uso — SDK nos módulos
+
+```python
+from siaa_vault_client import VaultClient
+
+# O namespace é automaticamente o client_id do módulo
+vault = VaultClient(
+    base_url="http://siaa-vault:8002",
+    client_id="modulo-multas",
+    client_secret="...",
+)
+
+# --- Salvar qualquer coisa ---
+await vault.set("renavan", "ABC-1234")
+await vault.set("cpf", "123.456.789-00")
+await vault.set("cookie_sessao", "eyJhbGc...", description="cookie do detran")
+await vault.set("ultima_consulta", "2024-01-15")
+
+# --- Ler tudo de uma vez (recomendado — uma request só) ---
+dados = await vault.get_all()
+# → {"renavan": "ABC-1234", "cpf": "123...", "cookie_sessao": "eyJ...", ...}
+
+# Usar nos requests do scraper:
+renavan = dados["renavan"]
+cpf = dados["cpf"]
+headers = {"Cookie": dados["cookie_sessao"]}
+
+# --- Ler uma chave específica ---
+renavan = await vault.get("renavan")
+
+# --- Atualizar (cookie expirou, salva o novo) ---
+await vault.set("cookie_sessao", novo_cookie)
+
+# --- Remover ---
+await vault.delete("cookie_sessao")
+
+# --- Listar chaves (sem valores) ---
+chaves = await vault.list_keys()
+```
+
+---
+
+## Decisão de Design: tokens siaa↔proxy NÃO ficam aqui
+
+Os tokens rotativos entre siaa-bot e siaa-proxy são segredos de infraestrutura gerenciados pelo próprio proxy. Colocá-los no vault criaria dependência circular: o bot precisaria do vault para falar com o proxy, mas o vault pode estar subindo. O modelo atual (proxy expõe `/internal/current-token` com `PROXY_SECRET_KEY` do `.env`) é mais resiliente e correto.
+
+O vault cuida de **dados de módulos** — o que o usuário forneceu, o que o módulo descobriu, o que precisa persistir entre execuções.
+
+---
 
 ## ⚠️ Atenção na VPS Oracle
 
-- **Nunca exponha o Vault para a internet** — use apenas na rede interna da VPS
-- Bind em `127.0.0.1` se todos os módulos rodarem na mesma máquina
-- Faça backup do `.env` (MASTER_KEY) em local seguro — se perder, perde os dados
-- Considere usar `ufw` para bloquear a porta 8001 externamente
+- Nunca exponha o vault para a internet — apenas rede interna Docker
+- Faça backup do `.env` (especialmente `MASTER_KEY`) em local absolutamente seguro
+- Se perder a `MASTER_KEY`, todos os dados cifrados ficam inacessíveis para sempre

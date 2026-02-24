@@ -13,7 +13,7 @@ async def validate_single(proxy: Proxy) -> tuple[bool, float]:
     proxy_url = proxy.url
     start = time.monotonic()
     try:
-        connector = aiohttp.TCPConnector(ssl=False)
+        connector = aiohttp.TCPConnector(ssl=True)
         timeout = aiohttp.ClientTimeout(total=settings.PROXY_TIMEOUT_SECONDS)
         async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
             async with session.get(settings.PROXY_TEST_URL, proxy=proxy_url) as resp:

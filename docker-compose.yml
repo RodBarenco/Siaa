@@ -1,6 +1,7 @@
 # =============================================================
 # SIAA — Docker Compose
 # Target: Oracle Cloud Free Tier — ARM64 Ampere A1
+# Serviços: ollama, siaa, siaa-vault, siaa-proxy
 # =============================================================
 services:
 
@@ -20,12 +21,6 @@ services:
           memory: 12G
         reservations:
           memory: 2G
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
 
   # -----------------------------------------------------------
   # 2. OLLAMA-INIT — Pull automático do modelo
@@ -48,46 +43,32 @@ services:
         echo "✅ Modelo pronto!"
 
   # -----------------------------------------------------------
-  # 3. SIAA — Bot principal
+  # 3. SIAA-VAULT — Cofre de dados sensíveis dos módulos
   # -----------------------------------------------------------
-  siaa:
+  siaa-vault:
     build:
       context: .
-      dockerfile: src/siaa/Dockerfile
-    container_name: siaa-bot
+      dockerfile: src/siaa_vault/Dockerfile
+    container_name: siaa-vault
     restart: unless-stopped
-    depends_on:
-      - ollama
-      - siaa-proxy
+    ports:
+      - "8002:8002"
     env_file:
       - .env
     environment:
-      # --- Força o treinamento na inicialização ---
-      FORCE_TRAIN: "true" 
-      SIAA_DATA_DIR: /siaa-data
-      OLLAMA_URL: http://siaa-ollama:11434
-      PROXY_SERVER_URL: http://siaa-proxy:8001
-      PYTHONUNBUFFERED: "1"
+      VAULT_DATA_DIR: /vault-data
     volumes:
-      - siaa-data:/siaa-data
-      # Código é lido direto da imagem (sem volumes para core)
+      - vault-data:/vault-data
     deploy:
       resources:
         limits:
-          cpus: "2.0"
-          memory: 10G
-        reservations:
-          memory: 512M
-    healthcheck:
-      test: ["CMD", "pgrep", "-f", "python.*app.py"]
-      interval: 60s
-      timeout: 10s
-      retries: 3
+          cpus: "0.5"
+          memory: 256M
     logging:
       driver: "json-file"
       options:
-        max-size: "10m"
-        max-file: "5"
+        max-size: "5m"
+        max-file: "3"
 
   # -----------------------------------------------------------
   # 4. SIAA-PROXY — Proxy para serviços externos
@@ -109,6 +90,50 @@ services:
         limits:
           cpus: "0.5"
           memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "3"
+
+  # -----------------------------------------------------------
+  # 5. SIAA — Bot principal
+  # restart: unless-stopped garante que o bot vai tentar
+  # reconectar ao ollama até ele estar pronto.
+  # -----------------------------------------------------------
+  siaa:
+    build:
+      context: .
+      dockerfile: src/siaa/Dockerfile
+    container_name: siaa-bot
+    restart: unless-stopped
+    depends_on:
+      - ollama
+      - siaa-vault
+      - siaa-proxy
+    env_file:
+      - .env
+    environment:
+      FORCE_TRAIN: "true"
+      SIAA_DATA_DIR: /siaa-data
+      OLLAMA_URL: http://siaa-ollama:11434
+      PROXY_SERVER_URL: http://siaa-proxy:8001
+      VAULT_SERVER_URL: http://siaa-vault:8002
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - siaa-data:/siaa-data
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 10G
+        reservations:
+          memory: 512M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
 
 # =============================================================
 # VOLUMES

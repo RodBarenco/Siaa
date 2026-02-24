@@ -1,22 +1,37 @@
+"""
+app/controllers/secret_controller.py — KV store cifrado por namespace.
+
+Filosofia simples:
+  - namespace = o módulo dono dos dados
+  - key       = qualquer string que o módulo queira usar
+  - value     = qualquer string (o vault não interpreta)
+  - description = campo humano opcional para o admin entender o que é
+
+O módulo de multas pode guardar renavan, cpf, cookie, última consulta.
+O módulo de energia pode guardar usuario, senha, cpf, token de sessão.
+O vault não se importa com o que é — só cifra e devolve.
+"""
 from datetime import datetime
 from typing import Optional
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, delete
+
 from pydantic import BaseModel
-from app.models.secret import Secret
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.models.audit_log import AuditLog
-from app.services.crypto import encrypt, decrypt
+from app.models.secret import Secret
+from app.services.crypto import decrypt, encrypt
 
 
-# ---------- Schemas ----------
+# ---------------------------------------------------------------------------
+# Schemas
+# ---------------------------------------------------------------------------
 
 class SecretWrite(BaseModel):
     namespace: str
     key: str
-    value: str               # texto puro — cifrado antes de salvar
-    description: Optional[str] = None
-    secret_type: str = "credential"
-    # "credential" | "personal_data" | "api_key" | "token"
+    value: str
+    description: Optional[str] = None  # opcional — só pra referência humana no admin
 
 
 class SecretRead(BaseModel):
@@ -24,55 +39,43 @@ class SecretRead(BaseModel):
     namespace: str
     key: str
     description: Optional[str]
-    secret_type: str
     is_active: bool
-    access_count: int
+    created_at: datetime
+    updated_at: datetime
     last_accessed_by: Optional[str]
     last_accessed_at: Optional[datetime]
-    created_at: datetime
-    # ⚠️ value NÃO está aqui — retornado separado só quando explicitamente pedido
+    access_count: int
 
     class Config:
         from_attributes = True
 
 
 class SecretWithValue(SecretRead):
-    value: str  # decifrado — só retornado em GET /secrets/{ns}/{key}
+    value: str  # decifrado, só retornado em endpoints de leitura
 
 
-# ---------- Controller ----------
+# ---------------------------------------------------------------------------
+# Controller
+# ---------------------------------------------------------------------------
 
 class SecretController:
 
     @staticmethod
-    async def _log(
-        db: AsyncSession,
-        client_id: str,
-        action: str,
-        namespace: str | None = None,
-        key: str | None = None,
-        detail: str | None = None,
-        ip: str | None = None,
-    ):
+    async def _log(db, client_id, action, namespace=None, key=None, detail=None, ip=None):
         db.add(AuditLog(
-            client_id=client_id,
-            action=action,
-            namespace=namespace,
-            key=key,
-            detail=detail,
-            ip_address=ip,
+            client_id=client_id, action=action,
+            namespace=namespace, key=key, detail=detail, ip=ip,
         ))
-        # não faz commit aqui — quem chama faz junto com a operação principal
 
     @staticmethod
     async def write(
         db: AsyncSession,
         data: SecretWrite,
         client_id: str,
-        ip: str | None = None,
+        ip: Optional[str] = None,
     ) -> Secret:
-        """Cria ou atualiza um segredo (upsert por namespace+key)."""
-        encrypted_value = encrypt(data.value)
+        """Upsert: cria ou atualiza pelo par namespace+key."""
+        encrypted = encrypt(data.value)
 
         result = await db.execute(
             select(Secret).where(Secret.namespace == data.namespace, Secret.key == data.key)
@@ -80,17 +83,16 @@ class SecretController:
         secret = result.scalar_one_or_none()
 
         if secret:
-            secret.value_encrypted = encrypted_value
+            secret.value_encrypted = encrypted
             secret.description = data.description
-            secret.secret_type = data.secret_type
+            secret.updated_at = datetime.utcnow()
             action = "update"
         else:
             secret = Secret(
                 namespace=data.namespace,
                 key=data.key,
-                value_encrypted=encrypted_value,
+                value_encrypted=encrypted,
                 description=data.description,
-                secret_type=data.secret_type,
             )
             db.add(secret)
             action = "write"
@@ -106,9 +108,9 @@ class SecretController:
         namespace: str,
         key: str,
         client_id: str,
-        ip: str | None = None,
-    ) -> SecretWithValue:
-        """Lê e decifra um segredo. Registra auditoria."""
+        ip: Optional[str] = None,
+    ) -> Optional[SecretWithValue]:
+        """Lê e decifra um valor pelo par namespace+key."""
         result = await db.execute(
             select(Secret).where(
                 Secret.namespace == namespace,
@@ -123,10 +125,7 @@ class SecretController:
             await db.commit()
             return None
 
-        # Decifra
-        plain_value = decrypt(secret.value_encrypted)
-
-        # Atualiza auditoria no registro
+        plain = decrypt(secret.value_encrypted)
         secret.last_accessed_by = client_id
         secret.last_accessed_at = datetime.utcnow()
         secret.access_count += 1
@@ -134,22 +133,21 @@ class SecretController:
         await SecretController._log(db, client_id, "read", namespace, key, ip=ip)
         await db.commit()
 
-        return SecretWithValue(
-            **SecretRead.model_validate(secret).model_dump(),
-            value=plain_value,
-        )
+        return SecretWithValue(**SecretRead.model_validate(secret).model_dump(), value=plain)
 
     @staticmethod
-    async def read_namespace(
+    async def read_all(
         db: AsyncSession,
         namespace: str,
         client_id: str,
-        ip: str | None = None,
+        ip: Optional[str] = None,
     ) -> dict[str, str]:
         """
-        Lê TODOS os segredos de um namespace de uma vez.
-        Retorna dict {key: value} — útil para o Siaa montar credenciais completas.
-        Ex: {"username": "joao@email.com", "password": "senha123", "cpf": "123..."}
+        Retorna todos os pares key→value de um namespace decifrados.
+
+        Retorno: {"renavan": "ABC-1234", "cpf": "123...", "cookie": "eyJ..."}
+
+        O módulo recebe tudo de uma vez e decide o que usar.
         """
         result = await db.execute(
             select(Secret).where(Secret.namespace == namespace, Secret.is_active == True)
@@ -164,7 +162,7 @@ class SecretController:
             s.access_count += 1
 
         await SecretController._log(
-            db, client_id, "read_namespace", namespace, detail=f"{len(secrets)} keys", ip=ip
+            db, client_id, "read_all", namespace, detail=f"{len(secrets)} keys", ip=ip
         )
         await db.commit()
         return output
@@ -174,9 +172,9 @@ class SecretController:
         db: AsyncSession,
         namespace: str,
         client_id: str,
-        ip: str | None = None,
+        ip: Optional[str] = None,
     ) -> list[SecretRead]:
-        """Lista metadados dos segredos do namespace — SEM decifrar valores."""
+        """Lista as chaves de um namespace sem decifrar os valores."""
         result = await db.execute(
             select(Secret).where(Secret.namespace == namespace, Secret.is_active == True)
         )
@@ -187,7 +185,6 @@ class SecretController:
 
     @staticmethod
     async def list_namespaces(db: AsyncSession) -> list[str]:
-        """Lista todos os namespaces existentes."""
         result = await db.execute(select(Secret.namespace).distinct())
         return [row[0] for row in result.all()]
 
@@ -197,7 +194,7 @@ class SecretController:
         namespace: str,
         key: str,
         client_id: str,
-        ip: str | None = None,
+        ip: Optional[str] = None,
     ) -> bool:
         result = await db.execute(
             select(Secret).where(Secret.namespace == namespace, Secret.key == key)
@@ -209,3 +206,24 @@ class SecretController:
         await SecretController._log(db, client_id, "delete", namespace, key, ip=ip)
         await db.commit()
         return True
+
+    @staticmethod
+    async def delete_namespace(
+        db: AsyncSession,
+        namespace: str,
+        client_id: str,
+        ip: Optional[str] = None,
+    ) -> int:
+        """Remove todas as chaves de um namespace. Retorna quantas foram removidas."""
+        result = await db.execute(
+            select(Secret).where(Secret.namespace == namespace)
+        )
+        secrets = result.scalars().all()
+        count = len(secrets)
+        for s in secrets:
+            await db.delete(s)
+        await SecretController._log(
+            db, client_id, "delete_namespace", namespace, detail=f"{count} keys", ip=ip
+        )
+        await db.commit()
+        return count
