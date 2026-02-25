@@ -8,7 +8,8 @@
         logs-bot logs-ollama logs-vault logs-proxy \
         shell-ollama shell-vault shell-proxy \
         up-bot up-vault up-proxy \
-        vault-register vault-audit
+        vault-register vault-audit vault-clients \
+        proxy-fetch proxy-validate proxy-stats
 
 GREEN  = \033[0;32m
 YELLOW = \033[1;33m
@@ -24,6 +25,7 @@ help: ## Mostra esta ajuda
 # --- Setup ---
 setup-dirs: ## Cria todos os diretórios de volume
 	mkdir -p volumes/siaa-data/contexts \
+	         volumes/siaa-data/contexts/cron-jobs \
 	         volumes/siaa-model \
 	         volumes/ollama-data \
 	         volumes/vault-data \
@@ -103,7 +105,7 @@ train: ## Força retreinamento do SVM de intenções
 	@echo "$(GREEN)✅ SVM retreinado.$(NC)"
 
 # --- Vault ---
-vault-register: ## Registra um módulo no vault. Ex: make vault-register ID=modulo-multas NS=modulo-multas
+vault-register: ## Registra um módulo no vault. Ex: make vault-register ID=modulo-multas NS=modulo-multas DESC='descricao'
 	@echo "$(CYAN)Registrando módulo '$(ID)' no vault...$(NC)"
 	@curl -s -X POST http://localhost:8002/admin/clients \
 		-H "X-Admin-Password: $$(grep ADMIN_PASSWORD .env | cut -d= -f2)" \
@@ -120,6 +122,29 @@ vault-audit: ## Mostra o log de auditoria do vault (últimas 50 entradas)
 vault-clients: ## Lista os módulos registrados no vault
 	@curl -s http://localhost:8002/admin/clients \
 		-H "X-Admin-Password: $$(grep ADMIN_PASSWORD .env | cut -d= -f2)" \
+		| python3 -m json.tool
+
+# --- Proxy ---
+_proxy-token: ## (interno) Obtém o token atual do proxy
+	$(eval PROXY_TOKEN := $(shell curl -s http://localhost:8001/internal/current-token \
+		-H "X-Secret-Key: $$(grep PROXY_SECRET_KEY .env | cut -d= -f2)" \
+		| python3 -c "import sys,json; print(json.load(sys.stdin)['token'])"))
+
+proxy-fetch: _proxy-token ## Força busca de novos proxies públicos
+	@curl -s -X POST http://localhost:8001/jobs/fetch-proxies \
+		-H "X-API-Token: $(PROXY_TOKEN)" \
+		| python3 -m json.tool
+	@echo "$(GREEN)✅ Job de fetch iniciado.$(NC)"
+
+proxy-validate: _proxy-token ## Força validação dos proxies existentes
+	@curl -s -X POST http://localhost:8001/jobs/validate-proxies \
+		-H "X-API-Token: $(PROXY_TOKEN)" \
+		| python3 -m json.tool
+	@echo "$(GREEN)✅ Job de validação iniciado.$(NC)"
+
+proxy-stats: _proxy-token ## Exibe estatísticas dos proxies (ativos, validados, inativos)
+	@curl -s http://localhost:8001/proxies/stats \
+		-H "X-API-Token: $(PROXY_TOKEN)" \
 		| python3 -m json.tool
 
 # --- Shell de debug ---

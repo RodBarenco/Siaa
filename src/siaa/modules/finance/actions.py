@@ -1,5 +1,6 @@
 import re
-from datetime import datetime
+import sqlite3
+from datetime import datetime, timedelta
 
 from framework.base_actions import BaseActions
 from framework.shared_utils import tokenize
@@ -62,9 +63,6 @@ class FinanceActions(BaseActions):
 
     def get_total(self, period: str = "month") -> float:
         """Soma todos os gastos do período (today / week / month)."""
-        import sqlite3
-        from datetime import timedelta
-
         now = datetime.now()
         if period == "today":
             cutoff = now.strftime("%d/%m/%Y")
@@ -86,3 +84,28 @@ class FinanceActions(BaseActions):
         except Exception as e:
             print(f"❌ FinanceActions.get_total: {e}")
             return 0.0
+
+    def get_total_by_date(self, date: str) -> float:
+        """Soma os gastos de uma data específica no formato DD/MM/AAAA."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                result = conn.execute(
+                    "SELECT SUM(amount) FROM finance WHERE date = ?", (date,)
+                ).fetchone()
+            return result[0] or 0.0
+        except Exception as e:
+            print(f"❌ FinanceActions.get_total_by_date: {e}")
+            return 0.0
+
+    def list_by_date(self, date: str) -> list[dict]:
+        """Retorna todos os lançamentos de uma data específica (DD/MM/AAAA)."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT * FROM finance WHERE date = ? ORDER BY time ASC", (date,)
+                ).fetchall()
+            return [dict(r) for r in rows]
+        except Exception as e:
+            print(f"❌ FinanceActions.list_by_date: {e}")
+            return []

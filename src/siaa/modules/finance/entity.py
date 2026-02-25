@@ -1,5 +1,43 @@
+import re
+from datetime import datetime
+
 from framework.base_entity import BaseEntity
 from modules.finance.actions import FinanceActions
+
+
+def _extract_date_from_message(message: str) -> str | None:
+    """
+    Tenta extrair uma data da mensagem.
+    Suporta: 'hoje', 'ontem', 'DD/MM', 'DD/MM/AAAA', 'dia DD'
+    Retorna string no formato DD/MM/AAAA ou None.
+    """
+    msg = message.lower()
+    now = datetime.now()
+
+    if "hoje" in msg:
+        return now.strftime("%d/%m/%Y")
+
+    if "ontem" in msg:
+        from datetime import timedelta
+        return (now - timedelta(days=1)).strftime("%d/%m/%Y")
+
+    # DD/MM/AAAA
+    m = re.search(r"\b(\d{2}/\d{2}/\d{4})\b", message)
+    if m:
+        return m.group(1)
+
+    # DD/MM (assume ano atual)
+    m = re.search(r"\b(\d{2}/\d{2})\b", message)
+    if m:
+        return f"{m.group(1)}/{now.year}"
+
+    # "dia DD" (assume mês/ano atual)
+    m = re.search(r"\bdia\s+(\d{1,2})\b", msg)
+    if m:
+        day = m.group(1).zfill(2)
+        return f"{day}/{now.strftime('%m/%Y')}"
+
+    return None
 
 
 class FinanceEntity(BaseEntity):
@@ -83,16 +121,46 @@ class FinanceEntity(BaseEntity):
 
             # 5. LISTAR
             if intent == "FINANCE_LIST":
-                total_mes = self.actions.get_total("month")
-                items     = self.actions.list_all(limit=8)
+                target_date = _extract_date_from_message(message)
+
+                # --- Consulta por data específica ---
+                if target_date:
+                    items = self.actions.list_by_date(target_date)
+                    total = self.actions.get_total_by_date(target_date)
+
+                    label = "Hoje" if target_date == datetime.now().strftime("%d/%m/%Y") else target_date
+
+                    if not items:
+                        return f"📭 Nenhum gasto registrado em *{label}*.", True
+
+                    lista = "\n".join(
+                        [f"• {r['time']} — {r['desc']}: R$ {r['amount']:.2f}"
+                         for r in items]
+                    )
+                    return (
+                        f"💸 *Gastos de {label}:*\n{lista}\n\n"
+                        f"📊 Total do dia: R$ {total:.2f}"
+                    ), True
+
+                # --- Consulta geral (últimos lançamentos + total do mês) ---
+                total_mes  = self.actions.get_total("month")
+                total_hoje = self.actions.get_total("today")
+                items      = self.actions.list_all(limit=8)
+
                 if not items:
                     return "📭 Nenhum gasto registrado.", True
+
                 lista = "\n".join(
                     [f"• {r['date']} — {r['desc']}: R$ {r['amount']:.2f}"
                      for r in reversed(items)]
                 )
+                total_listado = sum(r["amount"] for r in items)
+
                 return (
-                    f"💸 *Últimos gastos:*\n{lista}\n\n"
+                    f"💸 *Últimos {len(items)} lançamentos:*\n{lista}\n\n"
+                    f"─────────────────\n"
+                    f"💵 Soma desta lista: R$ {total_listado:.2f}\n"
+                    f"📅 Total hoje: R$ {total_hoje:.2f}\n"
                     f"📊 Total no mês: R$ {total_mes:.2f}"
                 ), True
 

@@ -1,5 +1,45 @@
+import re
+from datetime import datetime, timedelta
+
 from framework.base_entity import BaseEntity
 from modules.agenda.actions import AgendaActions
+
+
+def _extract_date_from_message(message: str) -> str | None:
+    """
+    Tenta extrair uma data da mensagem.
+    Suporta: 'hoje', 'amanhã', 'ontem', 'DD/MM', 'DD/MM/AAAA', 'dia DD'
+    Retorna string no formato DD/MM/AAAA ou None.
+    """
+    msg = message.lower()
+    now = datetime.now()
+
+    if "hoje" in msg:
+        return now.strftime("%d/%m/%Y")
+
+    if "amanhã" in msg or "amanha" in msg:
+        return (now + timedelta(days=1)).strftime("%d/%m/%Y")
+
+    if "ontem" in msg:
+        return (now - timedelta(days=1)).strftime("%d/%m/%Y")
+
+    # DD/MM/AAAA
+    m = re.search(r"\b(\d{2}/\d{2}/\d{4})\b", message)
+    if m:
+        return m.group(1)
+
+    # DD/MM (assume ano atual)
+    m = re.search(r"\b(\d{2}/\d{2})\b", message)
+    if m:
+        return f"{m.group(1)}/{now.year}"
+
+    # "dia DD" (assume mês/ano atual)
+    m = re.search(r"\bdia\s+(\d{1,2})\b", msg)
+    if m:
+        day = m.group(1).zfill(2)
+        return f"{day}/{now.strftime('%m/%Y')}"
+
+    return None
 
 
 class AgendaEntity(BaseEntity):
@@ -36,7 +76,8 @@ class AgendaEntity(BaseEntity):
             if intent == "AGENDA_ADD":
                 data = self.actions.extract_and_prepare(message, self.mem._llm)
                 if self.actions.insert(data):
-                    return f"✅ Agendado: *{data['title']}* para {data['date']}", True
+                    hora_str = f" às {data['time']}" if data.get("time") else ""
+                    return f"✅ Agendado: *{data['title']}* para {data['date']}{hora_str}", True
                 return "❌ Falha ao salvar compromisso.", True
 
             # 4. REMOVER
@@ -73,11 +114,34 @@ class AgendaEntity(BaseEntity):
 
             # 5. LISTAR
             if intent == "AGENDA_LIST":
+                target_date = _extract_date_from_message(message)
+
+                # --- Consulta por data específica ---
+                if target_date:
+                    items = self.actions.list_by_date(target_date)
+
+                    now = datetime.now()
+                    if target_date == now.strftime("%d/%m/%Y"):
+                        label = "Hoje"
+                    elif target_date == (now + __import__("datetime").timedelta(days=1)).strftime("%d/%m/%Y"):
+                        label = "Amanhã"
+                    else:
+                        label = target_date
+
+                    if not items:
+                        return f"📭 Nenhum compromisso em *{label}*.", True
+
+                    lista = "\n".join(
+                        [f"• {r['time']} — {r['title']}" for r in items]
+                    )
+                    return f"📅 *Agenda de {label}:*\n{lista}", True
+
+                # --- Consulta geral (próximos compromissos) ---
                 items = self.actions.list_all(limit=10)
                 if not items:
                     return "📭 Agenda vazia.", True
                 lista = "\n".join(
-                    [f"• {r['date']} — {r['title']}" for r in reversed(items)]
+                    [f"• {r['date']} {r['time']} — {r['title']}" for r in reversed(items)]
                 )
                 return f"📅 *Seus compromissos:*\n{lista}", True
 
